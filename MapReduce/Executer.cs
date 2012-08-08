@@ -51,13 +51,10 @@ namespace MapReduce
 				foreach (var items in persistedResults.GroupBy(x => x.BucketId / batchSize).ToArray())
 				{
 					var results = task.Reduce(items.SelectMany(x => x.Values)).ToArray();
-					Storage.PersistReduce(key, level + 1, items.Key, results);
-					if (level < 3 )
-						continue;
-					foreach (var reduceInput in results)
-					{
-						Console.WriteLine(reduceInput);
-					}
+					if (level < 3) 
+						Storage.PersistReduce(key, level + 1, items.Key, results);
+					else
+						Storage.PersistResult(key, results);
 				}
 			}
 		}
@@ -220,7 +217,38 @@ namespace MapReduce
 
 			public static void Delete(string key)
 			{
-				// currently not implemented ,need to for the real one
+				var paths = new[]
+					{
+						Path.Combine("MapResults", "Pending", key),
+						Path.Combine("MapResults", key),
+						Path.Combine("ReduceResults", "Pending", key),
+						Path.Combine("ReduceResults", "Level-2", "Buckets", key),
+						Path.Combine("ReduceResults", "Level-3", "Buckets", key),
+					};
+
+				foreach (var path in paths.Where(Directory.Exists))
+				{
+					Directory.Delete(path, true);
+				}
+				var result = Path.Combine("FinalResults", key + ".json");
+				if(File.Exists(result))
+					File.Delete(result);
+			}
+
+			public static void PersistResult(string key, IEnumerable<TReduceInput> results)
+			{
+				var dir = "FinalResults";
+				if (Directory.Exists(dir) == false)
+					Directory.CreateDirectory(dir);
+				var serializeObject = JsonConvert.SerializeObject(new PersistedResult<TReduceInput>
+				{
+					BucketId = -1,
+					Key = key,
+					Values = results,
+					Level = 3
+				}, Formatting.Indented);
+				File.WriteAllText(Path.Combine(dir, key + ".json"), serializeObject);
+
 			}
 		}
 

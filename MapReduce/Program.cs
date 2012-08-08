@@ -21,6 +21,8 @@ namespace MapReduce
 
 			var executer = new Executer<Person, StatePopulation>(1024, new PeopleCountByState());
 			executer.Execute(people);
+
+			executer.Query("CN");
 		}
 
 		
@@ -34,18 +36,6 @@ namespace MapReduce
 						Id = Guid.NewGuid(),
 						State = state
 					};
-			}
-		}
-	}
-
-	public static class Extensions
-	{
-		public static IEnumerable<IEnumerable<T>> Partition<T>(this IEnumerable<T> self, int size)
-		{
-			var source = self.ToList();
-			for (int i = 0; i < source.Count; i += size)
-			{
-				yield return source.Skip(i).Take(size).ToList();
 			}
 		}
 	}

@@ -23,7 +23,7 @@ namespace MapReduce
 			ExecuteMap(raw);
 
 			var keysToProcess = Storage.GetKeysToProcess().ToArray();
-			for (int i = 0; i < 4; i++)
+			for (int i = 0; i < 3; i++)
 			{
 				foreach (var key in keysToProcess)
 				{
@@ -41,16 +41,18 @@ namespace MapReduce
 			{
 				var persistedResults = Storage.GetUnprocessedFor(key, level, batchSize, hasMore).ToArray();
 				if (persistedResults.Length == 0)
+				{
+					Storage.Delete(key);
 					break;
+				}
 
 				Storage.MarkProcessed(key, level, persistedResults);
 
-				var itemsToReduce = persistedResults.GroupBy(x => x.BucketId / batchSize).ToArray();
-				foreach (var items in itemsToReduce)
+				foreach (var items in persistedResults.GroupBy(x => x.BucketId / batchSize).ToArray())
 				{
 					var results = task.Reduce(items.SelectMany(x => x.Values)).ToArray();
 					Storage.PersistReduce(key, level + 1, items.Key, results);
-					if (level < 4 && itemsToReduce.Length > 1)
+					if (level < 3 )
 						continue;
 					foreach (var reduceInput in results)
 					{
@@ -66,7 +68,8 @@ namespace MapReduce
 			{
 				foreach (var reduceInput in from tuple in task.Map(partition) group tuple by new { Id = tuple.Item1, Reduce = task.GetReduceKey(tuple.Item2) })
 				{
-					var bucket = AbsStableInvariantIgnoreCaseStringHash(reduceInput.Key.Id.ToString()) % (batchSize * batchSize * batchSize);
+					var absStableInvariantIgnoreCaseStringHash = AbsStableInvariantIgnoreCaseStringHash(reduceInput.Key.Id.ToString());
+					var bucket = absStableInvariantIgnoreCaseStringHash % (batchSize * batchSize);
 					Storage.PersistMap(reduceInput.Key.Reduce, reduceInput.Key.Id, bucket, reduceInput.Select(x => x.Item2));
 				}
 			}
@@ -74,7 +77,7 @@ namespace MapReduce
 
 		private int AbsStableInvariantIgnoreCaseStringHash(string s)
 		{
-			return Math.Abs(s.Aggregate(0, (current, ch) => (char.ToUpperInvariant(ch) * 397) ^ current));
+			return Math.Abs(s.Aggregate(0, (current, ch) => (char.ToUpperInvariant(ch).GetHashCode() * 397) ^ current));
 		}
 
 		public static class Storage
@@ -112,7 +115,6 @@ namespace MapReduce
 						break;
 					case 2:
 					case 3:
-					case 4:
 						results = GetPersistedReduceResults(key, level);
 						break;
 					default:
@@ -215,23 +217,16 @@ namespace MapReduce
 					UpdateBucketId(key, level, items, items.Key);
 				}
 			}
+
+			public static void Delete(string key)
+			{
+				// currently not implemented ,need to for the real one
+			}
 		}
-	}
 
-	public class Ref<T>
-	{
-		public T Value { get; set; }
-	}
-
-	public class PersistedResult<TReduceInput>
-	{
-		public string Key { get; set; }
-		public Guid Id { get; set; }
-		public IEnumerable<TReduceInput> Values { get; set; }
-		public int BucketId { get; set; }
-
-		public string File { get; set; }
-
-		public int Level { get; set; }
+		public PersistedResult<TReduceInput> Query(string key)
+		{
+			return null;
+		}
 	}
 }

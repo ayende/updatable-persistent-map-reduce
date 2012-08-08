@@ -79,7 +79,7 @@ namespace MapReduce
 
 		public static class Storage
 		{
-			public static void PersistMap(string reduceKey, Guid id, int bucket, IEnumerable<TReduceInput> values)
+			public static void PersistMap(string reduceKey, string id, int bucket, IEnumerable<TReduceInput> values)
 			{
 				var dir = Path.Combine("MapResults", "Pending", reduceKey);
 				if (Directory.Exists(dir) == false)

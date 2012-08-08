@@ -6,7 +6,7 @@ namespace MapReduce
 {
 	public class PeopleCountByState : MapReduceTask<Person, StatePopulation>
 	{
-		public override IEnumerable<Tuple<Guid, StatePopulation>> Map(IEnumerable<Person> people)
+		public override IEnumerable<Tuple<string, StatePopulation>> Map(IEnumerable<Person> people)
 		{
 			return from person in people
 			       select Tuple.Create(person.Id, new StatePopulation
@@ -33,6 +33,11 @@ namespace MapReduce
 		public override string GetReduceKey(StatePopulation input)
 		{
 			return input.State;
+		}
+
+		public override string GetDocumentKey(Person input)
+		{
+			return input.Id;
 		}
 	}
 }

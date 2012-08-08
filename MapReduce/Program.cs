@@ -9,7 +9,7 @@ namespace MapReduce
 {
 	class Program
 	{
-		static void Main(string[] args)
+		static void Main()
 		{
 			foreach (var directory in Directory.GetDirectories("."))
 			{
@@ -40,6 +40,7 @@ namespace MapReduce
 			}
 		}
 
+		private static int _peopleCounter;
 
 		public static IEnumerable<Person> PeopleFrom(string state, int count)
 		{
@@ -47,7 +48,7 @@ namespace MapReduce
 			{
 				yield return new Person
 					{
-						Id = Guid.NewGuid(),
+						Id = "people-" + (++_peopleCounter),
 						State = state
 					};
 			}

@@ -22,14 +22,24 @@ namespace MapReduce
 			var executer = new Executer<Person, StatePopulation>(1024, new PeopleCountByState());
 			executer.Execute(people);
 
+			PrintOutput(executer);
+		}
+
+		private static void PrintOutput(Executer<Person, StatePopulation> executer)
+		{
 			var results = executer.Query("CA");
+			foreach (var population in results)
+			{
+				Console.WriteLine(population);
+			}
+
+			results = executer.Query("TX");
 			foreach (var population in results)
 			{
 				Console.WriteLine(population);
 			}
 		}
 
-		
 
 		public static IEnumerable<Person> PeopleFrom(string state, int count)
 		{

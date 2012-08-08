@@ -36,22 +36,21 @@ namespace MapReduce
 		private void ExecuteReduce(string key, int level)
 		{
 			var hasMore = new Ref<bool> { Value = true };
-			bool hadMore = false;
 
 			while (hasMore.Value)
 			{
 				var persistedResults = Storage.GetUnprocessedFor(key, level, batchSize, hasMore).ToArray();
-				hadMore |= hasMore.Value;
 				if (persistedResults.Length == 0)
 					break;
 
 				Storage.MarkProcessed(key, level, persistedResults);
 
-				foreach (var items in persistedResults.GroupBy(x => x.BucketId / batchSize))
+				var itemsToReduce = persistedResults.GroupBy(x => x.BucketId / batchSize).ToArray();
+				foreach (var items in itemsToReduce)
 				{
 					var results = task.Reduce(items.SelectMany(x => x.Values)).ToArray();
 					Storage.PersistReduce(key, level + 1, items.Key, results);
-					if (hadMore)
+					if (level < 4 && itemsToReduce.Length > 1)
 						continue;
 					foreach (var reduceInput in results)
 					{
@@ -175,7 +174,7 @@ namespace MapReduce
 			public static void UpdateBucketId(string key, int level, IEnumerable<PersistedResult<TReduceInput>> persistedResults, int bucketId)
 			{
 				string path;
-				if(level == 1)
+				if (level == 1)
 				{
 					path = Path.Combine("MapResults", key, "Buckets", bucketId.ToString(CultureInfo.InvariantCulture));
 				}
@@ -183,7 +182,7 @@ namespace MapReduce
 				{
 					path = Path.Combine("ReduceResults", "Level-" + level, "Buckets", key, bucketId.ToString(CultureInfo.InvariantCulture));
 				}
-				
+
 				if (Directory.Exists(path) == false)
 					Directory.CreateDirectory(path);
 

@@ -248,13 +248,26 @@ namespace MapReduce
 					Level = 3
 				}, Formatting.Indented);
 				File.WriteAllText(Path.Combine(dir, key + ".json"), serializeObject);
+			}
 
+			public static PersistedResult<TReduceInput> ReadResult(string key)
+			{
+				var file = Path.Combine("FinalResults", key + ".json");
+				if(File.Exists(file) == false)
+					return null;
+				var readAllText = File.ReadAllText(file);
+				var deserializeObject = JsonConvert.DeserializeObject<PersistedResult<TReduceInput>>(readAllText);
+				deserializeObject.File = file;
+				return deserializeObject;
 			}
 		}
 
-		public PersistedResult<TReduceInput> Query(string key)
+		public IEnumerable<TReduceInput> Query(string key)
 		{
-			return null;
+			var persistedResult = Storage.ReadResult(key);
+			if(persistedResult == null)
+				return Enumerable.Empty<TReduceInput>();
+			return persistedResult.Values;
 		}
 	}
 }

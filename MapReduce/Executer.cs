@@ -34,7 +34,7 @@ namespace MapReduce
 
 			var keysToProcess = Storage.GetKeysToProcess().ToArray();
 			logger.Debug(()=>string.Format("Processing the following keys: [{0}]",string.Join(", ", keysToProcess)));
-			for (int i = 0; i < 3; i++)
+			for (var i = 0; i < 3; i++)
 			{
 				foreach (var key in keysToProcess)
 				{
@@ -120,7 +120,7 @@ namespace MapReduce
 					{
 						Path.Combine("Schedules", "Maps", key, bucket.ToString(CultureInfo.InvariantCulture)),
 						Path.Combine("Schedules", "Reduce", "One", key, (bucket/ BatchSize).ToString(CultureInfo.InvariantCulture)),
-						Path.Combine("Schedules", "Reduce", "Two", key, ((bucket/ BatchSize) / BatchSize).ToString(CultureInfo.InvariantCulture)),
+						Path.Combine("Schedules", "Reduce", "Two", key, ((bucket/ BatchSize) / BatchSize).ToString(CultureInfo.InvariantCulture))
 					})
 				{
 					var dir = Path.GetDirectoryName(path);
@@ -134,7 +134,7 @@ namespace MapReduce
 				foreach (var path in new[]
 					{
 						Path.Combine("ReduceResults", "One", key, (bucket/ BatchSize).ToString(CultureInfo.InvariantCulture)),
-						Path.Combine("ReduceResults", "Two", key, ((bucket/ BatchSize) / BatchSize).ToString(CultureInfo.InvariantCulture)),
+						Path.Combine("ReduceResults", "Two", key, ((bucket/ BatchSize) / BatchSize).ToString(CultureInfo.InvariantCulture))
 					})
 				{
 					if (Directory.Exists(path))
@@ -184,10 +184,10 @@ namespace MapReduce
 				File.WriteAllText(Path.Combine(dir, id), serializeObject);
 			}
 
-			private static int counter;
+			private static int _counter;
 			private static void WriteResults(string dir, PersistedResult<TReduceInput> persistedResult)
 			{
-				WriteResults((++counter).ToString(), dir, persistedResult);
+				WriteResults((++_counter).ToString(CultureInfo.InvariantCulture), dir, persistedResult);
 			}
 
 
@@ -227,7 +227,7 @@ namespace MapReduce
 					{
 						Path.Combine("MapResults", key),
 						Path.Combine("ReduceResults", "One", key),
-						Path.Combine("ReduceResults", "Two", key),
+						Path.Combine("ReduceResults", "Two", key)
 					};
 
 				foreach (var path in paths.Where(Directory.Exists))
@@ -257,7 +257,7 @@ namespace MapReduce
 
 			public static void PersistResult(string key, IEnumerable<TReduceInput> results)
 			{
-				var dir = "FinalResults";
+				const string dir = "FinalResults";
 				if (Directory.Exists(dir) == false)
 					Directory.CreateDirectory(dir);
 				var serializeObject = JsonConvert.SerializeObject(new PersistedResult<TReduceInput>

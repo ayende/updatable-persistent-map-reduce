@@ -9,12 +9,11 @@ namespace MapReduce
 {
 	public class Executer<TMapInput, TReduceInput>
 	{
-		private readonly int batchSize;
+		private const int batchSize = 1024;
 		private readonly MapReduceTask<TMapInput, TReduceInput> task;
 
-		public Executer(int batchSize, MapReduceTask<TMapInput, TReduceInput> task)
+		public Executer(MapReduceTask<TMapInput, TReduceInput> task)
 		{
-			this.batchSize = batchSize;
 			this.task = task;
 		}
 
@@ -27,7 +26,7 @@ namespace MapReduce
 			{
 				foreach (var key in keysToProcess)
 				{
-					ExecuteReduce(key, i + 1);
+					ExecuteReduce(key, i);
 				}
 			}
 
@@ -35,27 +34,27 @@ namespace MapReduce
 
 		private void ExecuteReduce(string key, int level)
 		{
-			var hasMore = new Ref<bool> { Value = true };
-
-			while (hasMore.Value)
+			IEnumerable<PersistedResult<TReduceInput>> persistedResults;
+			switch (level)
 			{
-				var persistedResults = Storage.GetUnprocessedFor(key, level, batchSize, hasMore).ToArray();
-				if (persistedResults.Length == 0)
-				{
-					Storage.Delete(key);
+				case 0:
+					persistedResults = Storage.GetScheduledMapBucketsFor(key);
 					break;
-				}
+				case 1:
+				case 2:
+					persistedResults = Storage.GetScheduledReduceBucketsFor(key, level);
+					break;
+				default:
+					throw new ArgumentException("Invalid level: " + level);
+			}
 
-				Storage.MarkProcessed(key, level, persistedResults);
-
-				foreach (var items in persistedResults.GroupBy(x => x.BucketId / batchSize).ToArray())
-				{
-					var results = task.Reduce(items.SelectMany(x => x.Values)).ToArray();
-					if (level < 3) 
-						Storage.PersistReduce(key, level + 1, items.Key, results);
-					else
-						Storage.PersistResult(key, results);
-				}
+			foreach (var items in persistedResults.GroupBy(x => x.BucketId/batchSize).ToArray())
+			{
+				var results = task.Reduce(items.SelectMany(x => x.Values)).ToArray();
+				if (level < 2)
+					Storage.PersistReduce(key, level + 1, items.Key, results);
+				else
+					Storage.PersistResult(key, results);
 			}
 		}
 
@@ -63,176 +62,154 @@ namespace MapReduce
 		{
 			foreach (var partition in raw.Partition(batchSize))
 			{
-				foreach (var reduceInput in from tuple in task.Map(partition) group tuple by new { Id = tuple.Item1, Reduce = task.GetReduceKey(tuple.Item2) })
+				var items = partition.ToArray();
+				foreach (var mapInput in items)
 				{
-					var absStableInvariantIgnoreCaseStringHash = AbsStableInvariantIgnoreCaseStringHash(reduceInput.Key.Id.ToString());
-					var bucket = absStableInvariantIgnoreCaseStringHash % (batchSize * batchSize);
+					var documentId = task.GetDocumentId(mapInput);
+					Storage.DeleteDocumentIdResultsAndScheduleTheirBucketsForReduce(documentId);
+				}
+
+				foreach (var reduceInput in from tuple in task.Map(items) group tuple by new { Id = tuple.Item1, Reduce = task.GetReduceKey(tuple.Item2) })
+				{
+					var bucket = Storage.GetBucket(reduceInput.Key.Id);
+					Storage.ScheduleReduction(reduceInput.Key.Reduce, bucket);
 					Storage.PersistMap(reduceInput.Key.Reduce, reduceInput.Key.Id, bucket, reduceInput.Select(x => x.Item2));
 				}
 			}
 		}
 
-		private int AbsStableInvariantIgnoreCaseStringHash(string s)
-		{
-			return Math.Abs(s.Aggregate(0, (current, ch) => (char.ToUpperInvariant(ch).GetHashCode() * 397) ^ current));
-		}
 
 		public static class Storage
 		{
-			public static void PersistMap(string reduceKey, string id, int bucket, IEnumerable<TReduceInput> values)
+			public static void ScheduleReduction(string key, int bucket)
 			{
-				var dir = Path.Combine("MapResults", "Pending", reduceKey);
-				if (Directory.Exists(dir) == false)
-					Directory.CreateDirectory(dir);
-				var serializeObject = JsonConvert.SerializeObject(new PersistedResult<TReduceInput>
+				foreach (var path in new[]
 					{
-						BucketId = bucket,
-						Id = id,
-						Key = reduceKey,
-						Values = values
-					}, Formatting.Indented);
-				File.WriteAllText(Path.Combine(dir, id + ".json"), serializeObject);
+						Path.Combine("Schedules", "Maps", key, bucket.ToString(CultureInfo.InvariantCulture)),
+						Path.Combine("Schedules", "Reduce", "One", key, (bucket/ batchSize).ToString(CultureInfo.InvariantCulture)),
+						Path.Combine("Schedules", "Reduce", "Two", key, ((bucket/ batchSize) / batchSize).ToString(CultureInfo.InvariantCulture)),
+					})
+				{
+					var dir = Path.GetDirectoryName(path);
+					if (Directory.Exists(dir) == false)
+						Directory.CreateDirectory(dir);
+					File.WriteAllText(path, "work");
+				}
+
+				// reset buckets
+				foreach (var path in new[]
+					{
+						Path.Combine("ReduceResults", "One", key, (bucket/ batchSize).ToString(CultureInfo.InvariantCulture)),
+						Path.Combine("ReduceResults", "Two", key, ((bucket/ batchSize) / batchSize).ToString(CultureInfo.InvariantCulture)),
+					})
+				{
+					if (Directory.Exists(path))
+						Directory.Delete(path, true);
+				}
+
+				var resultFile = Path.Combine("FinalResults", key);
+				if(File.Exists(resultFile))
+					File.Delete(resultFile);
 			}
 
 			public static IEnumerable<string> GetKeysToProcess()
 			{
-				var path = Path.Combine("MapResults", "Pending");
-				return Directory.GetDirectories(path).Select(x => x.Substring(path.Length + 1));
-			}
-
-			public static IEnumerable<PersistedResult<TReduceInput>> GetUnprocessedFor(string key, int level, int size, Ref<bool> hasMore)
-			{
-				hasMore.Value = false;
-				int lastBucketId = -1;
-				IEnumerable<PersistedResult<TReduceInput>> results;
-				switch (level)
+				//read from the schedule
+				var path = Path.Combine("Schedules", "Maps");
+				if (Directory.Exists(path) == false)
+					yield break;
+				foreach (var file in Directory.GetDirectories(path))
 				{
-					case 1:
-						results = GetPersistedMapResults(key);
-						break;
-					case 2:
-					case 3:
-						results = GetPersistedReduceResults(key, level);
-						break;
-					default:
-						throw new InvalidOperationException("Unknown level " + level);
-				}
-				foreach (var persistedResult in results.OrderBy(x => x.BucketId))
-				{
-					size -= 1;
-					if (size < 0 && lastBucketId != persistedResult.BucketId)
-					{
-						hasMore.Value = true;
-						yield break;
-					}
-					lastBucketId = persistedResult.BucketId;
-					yield return persistedResult;
+					yield return Path.GetFileNameWithoutExtension(file);
 				}
 			}
 
-			private static IEnumerable<PersistedResult<TReduceInput>> GetPersistedReduceResults(string key, int level)
+			public static void PersistMap(string reduceKey, string id, int bucket, IEnumerable<TReduceInput> values)
 			{
-				var dir = Path.Combine("ReduceResults", "Level-" + level, "Pending", key);
-				foreach (var file in Directory.GetFiles(dir, "*.json"))
-				{
-					var readAllText = File.ReadAllText(file);
-					var deserializeObject = JsonConvert.DeserializeObject<PersistedResult<TReduceInput>>(readAllText);
-					deserializeObject.File = file;
-					yield return deserializeObject;
-				}
+				WriteResults(id, Path.Combine("MapResults", reduceKey, bucket.ToString(CultureInfo.InvariantCulture)),
+							 new PersistedResult<TReduceInput>
+								 {
+									 BucketId = bucket,
+									 Id = id,
+									 Key = reduceKey,
+									 Values = values
+								 });
 			}
 
-			private static IEnumerable<PersistedResult<TReduceInput>> GetPersistedMapResults(string key)
+			private static void WriteResults(string id, string dir, PersistedResult<TReduceInput> persistedResult)
 			{
-				var path = Path.Combine("MapResults", "Pending", key);
-				foreach (var file in Directory.GetFiles(path, "*.json"))
-				{
-					var readAllText = File.ReadAllText(file);
-					var deserializeObject = JsonConvert.DeserializeObject<PersistedResult<TReduceInput>>(readAllText);
-					deserializeObject.File = file;
-					yield return deserializeObject;
-				}
-			}
-
-			public static int GetNextBucketIdFor(string key, string purpose)
-			{
-				var dir = Path.Combine("BucketIds", purpose);
 				if (Directory.Exists(dir) == false)
 					Directory.CreateDirectory(dir);
-				var path = Path.Combine(dir, key + ".json");
-				if (File.Exists(path) == false)
-				{
-					File.WriteAllText(path, "1");
-					return 1;
-				}
-				var i = int.Parse(File.ReadAllText(path));
-				File.WriteAllText(path, (i + 1).ToString(CultureInfo.InvariantCulture));
-				return i + 1;
+				var serializeObject = JsonConvert.SerializeObject(persistedResult, Formatting.Indented);
+				File.WriteAllText(Path.Combine(dir, id), serializeObject);
 			}
 
-			public static void UpdateBucketId(string key, int level, IEnumerable<PersistedResult<TReduceInput>> persistedResults, int bucketId)
+			private static void WriteResults(string dir, PersistedResult<TReduceInput> persistedResult)
 			{
-				string path;
-				if (level == 1)
-				{
-					path = Path.Combine("MapResults", key, "Buckets", bucketId.ToString(CultureInfo.InvariantCulture));
-				}
-				else
-				{
-					path = Path.Combine("ReduceResults", "Level-" + level, "Buckets", key, bucketId.ToString(CultureInfo.InvariantCulture));
-				}
-
-				if (Directory.Exists(path) == false)
-					Directory.CreateDirectory(path);
-
-				foreach (var persistedResult in persistedResults)
-				{
-					File.Move(persistedResult.File, Path.Combine(path, Path.GetFileName(persistedResult.File)));
-				}
+				WriteResults(Path.GetFileNameWithoutExtension(Path.GetTempFileName()), dir, persistedResult);
 			}
+
 
 			public static void PersistReduce(string key, int level, int bucketId, IEnumerable<TReduceInput> values)
 			{
-				var dir = Path.Combine("ReduceResults", "Level-" + level, "Pending", key);
-				if (Directory.Exists(dir) == false)
-					Directory.CreateDirectory(dir);
-				var serializeObject = JsonConvert.SerializeObject(new PersistedResult<TReduceInput>
-				{
-					BucketId = bucketId,
-					Key = key,
-					Values = values,
-					Level = level
-				}, Formatting.Indented);
-				File.WriteAllText(Path.Combine(dir, Path.GetFileName(Path.GetTempFileName()) + ".json"), serializeObject);
+				var dir = Path.Combine("ReduceResults", GetLevelString(level), key, bucketId.ToString(CultureInfo.InvariantCulture));
+				WriteResults(dir, new PersistedResult<TReduceInput>
+					{
+						BucketId = bucketId,
+						Key = key,
+						Values = values,
+						Level = level
+					});
 
 			}
 
-			public static void MarkProcessed(string key, int level, PersistedResult<TReduceInput>[] persistedResults)
+			private static string GetLevelString(int level)
 			{
-				foreach (var items in persistedResults.GroupBy(x => x.BucketId))
+				string levelString;
+				switch (level)
 				{
-					UpdateBucketId(key, level, items, items.Key);
+					case 1:
+						levelString = "One";
+						break;
+					case 2:
+						levelString = "Two";
+						break;
+					default:
+						throw new ArgumentException("Invalid level: " + level);
 				}
+				return levelString;
 			}
 
 			public static void Delete(string key)
 			{
 				var paths = new[]
 					{
-						Path.Combine("MapResults", "Pending", key),
 						Path.Combine("MapResults", key),
-						Path.Combine("ReduceResults", "Pending", key),
-						Path.Combine("ReduceResults", "Level-2", "Buckets", key),
-						Path.Combine("ReduceResults", "Level-3", "Buckets", key),
+						Path.Combine("ReduceResults", "One", key),
+						Path.Combine("ReduceResults", "Two", key),
 					};
 
 				foreach (var path in paths.Where(Directory.Exists))
 				{
 					Directory.Delete(path, true);
 				}
-				var result = Path.Combine("FinalResults", key + ".json");
-				if(File.Exists(result))
+				var result = Path.Combine("FinalResults", key);
+				if (File.Exists(result))
 					File.Delete(result);
+			}
+
+			public static void DeleteDocumentIdResultsAndScheduleTheirBucketsForReduce(string documentId)
+			{
+				if (Directory.Exists("MapResults") == false)
+					return;
+
+				foreach (var file in Directory.GetFiles("MapResults", documentId, SearchOption.AllDirectories))
+				{
+					var persistedResult = ReadResult(file);
+					ScheduleReduction(persistedResult.Key, GetBucket(documentId));
+
+					File.Delete(file);
+				}
 			}
 
 			public static void PersistResult(string key, IEnumerable<TReduceInput> results)
@@ -247,25 +224,80 @@ namespace MapReduce
 					Values = results,
 					Level = 3
 				}, Formatting.Indented);
-				File.WriteAllText(Path.Combine(dir, key + ".json"), serializeObject);
+				File.WriteAllText(Path.Combine(dir, key), serializeObject);
 			}
 
 			public static PersistedResult<TReduceInput> ReadResult(string key)
 			{
-				var file = Path.Combine("FinalResults", key + ".json");
-				if(File.Exists(file) == false)
+				var file = Path.Combine("FinalResults", key);
+				return ReadFromFile(file);
+			}
+
+			private static PersistedResult<TReduceInput> ReadFromFile(string file)
+			{
+				if (File.Exists(file) == false)
 					return null;
 				var readAllText = File.ReadAllText(file);
 				var deserializeObject = JsonConvert.DeserializeObject<PersistedResult<TReduceInput>>(readAllText);
 				deserializeObject.File = file;
 				return deserializeObject;
 			}
+
+
+			public static int GetBucket(string id)
+			{
+				return AbsStableInvariantIgnoreCaseStringHash(id) % (batchSize * batchSize);
+			}
+
+			private static int AbsStableInvariantIgnoreCaseStringHash(string s)
+			{
+				return Math.Abs(s.Aggregate(0, (current, ch) => (char.ToUpperInvariant(ch).GetHashCode() * 397) ^ current));
+			}
+
+			public static IEnumerable<PersistedResult<TReduceInput>> GetScheduledMapBucketsFor(string key)
+			{
+				var path = Path.Combine("Schedules", "Maps", key);
+				if(Directory.Exists(path) == false)
+					yield break;
+
+				foreach (var bucket in Directory.GetFiles(path))
+				{
+					var bucketPath = Path.Combine("MapResults", key, Path.GetFileNameWithoutExtension(bucket));
+					if(Directory.Exists(bucketPath) == false)
+						continue;
+
+					foreach (var file in Directory.GetFiles(bucketPath))
+					{
+						yield return ReadFromFile(file);
+					}
+				}
+			}
+
+			public static IEnumerable<PersistedResult<TReduceInput>> GetScheduledReduceBucketsFor(string key, int level)
+			{
+				var levelString = GetLevelString(level);
+				var path = Path.Combine("Schedules", "Reduce", levelString, key);
+				if (Directory.Exists(path) == false)
+					yield break;
+
+				foreach (var bucket in Directory.GetFiles(path))
+				{
+					var bucketPath = Path.Combine("ReduceResults", levelString, key, Path.GetFileNameWithoutExtension(bucket));
+					if (Directory.Exists(bucketPath) == false)
+						continue;
+
+					foreach (var file in Directory.GetFiles(bucketPath))
+					{
+						yield return ReadFromFile(file);
+					}
+				}
+			}
 		}
 
 		public IEnumerable<TReduceInput> Query(string key)
 		{
 			var persistedResult = Storage.ReadResult(key);
-			if(persistedResult == null)
+			if (persistedResult == null)
 				return Enumerable.Empty<TReduceInput>();
 			return persistedResult.Values;
 		}

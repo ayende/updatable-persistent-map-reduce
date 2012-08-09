@@ -11,6 +11,6 @@ namespace MapReduce
 
 		public abstract string GetReduceKey(TReduceInput input);
 
-		public abstract string GetDocumentKey(TMapInput input);
+		public abstract string GetDocumentId(TMapInput input);
 	}
 }

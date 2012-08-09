@@ -19,7 +19,7 @@ namespace MapReduce
 			var people = PeopleFrom("CA", 379)
 				.Concat(PeopleFrom("TX", 256));
 
-			var executer = new Executer<Person, StatePopulation>(1024, new PeopleCountByState());
+			var executer = new Executer<Person, StatePopulation>(new PeopleCountByState());
 			executer.Execute(people);
 
 			PrintOutput(executer);

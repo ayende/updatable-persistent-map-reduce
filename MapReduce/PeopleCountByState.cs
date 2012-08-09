@@ -35,7 +35,7 @@ namespace MapReduce
 			return input.State;
 		}
 
-		public override string GetDocumentKey(Person input)
+		public override string GetDocumentId(Person input)
 		{
 			return input.Id;
 		}

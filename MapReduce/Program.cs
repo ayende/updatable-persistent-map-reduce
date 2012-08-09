@@ -18,7 +18,7 @@ namespace MapReduce
 				{
 					Directory.Delete(directory, true);
 				}
-				catch (Exception e)
+				catch (Exception)
 				{
 				}
 			}
@@ -29,12 +29,14 @@ namespace MapReduce
 
 			var executer = Executer.Create(new PeopleCountByState());
 			executer.Execute(people);
-
+			Console.Clear();
 			var val = PrintOutput(executer);
 
-			people[2].State = "TX";
-
-			executer.Execute(new[] {people[2]});
+			executer.Execute(new[] {new Person
+				{
+					Id = "people-300",
+					State = "CA"
+				}, });
 
 			var next = PrintOutput(executer);
 

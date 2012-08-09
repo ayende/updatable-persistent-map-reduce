@@ -18,9 +18,9 @@ namespace MapReduce
 
 	public class Executer<TMapInput, TReduceInput>
 	{
-		private static Logger logger = LogManager.GetCurrentClassLogger();
+		private static readonly Logger logger = LogManager.GetCurrentClassLogger();
 
-		private const int BatchSize = 1024;
+		private const int BatchSize = 16;
 		private readonly MapReduceTask<TMapInput, TReduceInput> task;
 
 		public Executer(MapReduceTask<TMapInput, TReduceInput> task)
@@ -63,15 +63,15 @@ namespace MapReduce
 			var groupings = persistedResults.GroupBy(x => x.BucketId/BatchSize).ToArray();
 			foreach (var items in groupings)
 			{
-				logger.Debug("Executing reduce for {0} level {1} with {2} batches for batch {3}", key, level, groupings.Count(), items.Key);
+				logger.Info("Executing reduce for {0} level {1} with {2} batches for batch {3}", key, level, groupings.Count(), items.Key);
 				var reduceInputs = items.SelectMany(x => x.Values).ToArray();
 				var results = task.Reduce(reduceInputs).ToArray();
 
 				if(logger.IsDebugEnabled)
 				{
-					logger.Debug("Reduce for key {0} level {3} - ({4} items) [{1}] to [{2}]",
+					logger.Info("Reduce for key {0} level {3} - ({4} items) [{1}] to [{2}]",
 						key,
-						string.Join(", ", reduceInputs.Select(x=>x.ToString())),
+						string.Join(", ", reduceInputs.Take(2).Select(x=>x.ToString())),
 						string.Join(", ", results.Select(x => x.ToString())),
 						level,
 						reduceInputs.Length
@@ -97,11 +97,16 @@ namespace MapReduce
 					Storage.DeleteDocumentIdResultsAndScheduleTheirBucketsForReduce(documentId);
 				}
 
+				logger.Info("Mapping {0} items", items.Length);
 				foreach (var reduceInput in from tuple in task.Map(items) group tuple by new { Id = tuple.Item1, Reduce = task.GetReduceKey(tuple.Item2) })
 				{
+					var reduceInputs = reduceInput.Select(x => x.Item2).ToArray();
 					var bucket = Storage.GetBucket(reduceInput.Key.Id);
+
+					logger.Info("Result {0}/{1} ({2}): {3}", reduceInput.Key.Id, reduceInput.Key.Reduce, bucket, string.Join(", ", reduceInput.Select(x=>x.ToString())));
+
 					Storage.ScheduleReduction(reduceInput.Key.Reduce, bucket);
-					Storage.PersistMap(reduceInput.Key.Reduce, reduceInput.Key.Id, bucket, reduceInput.Select(x => x.Item2));
+					Storage.PersistMap(reduceInput.Key.Reduce, reduceInput.Key.Id, bucket, reduceInputs);
 				}
 			}
 		}

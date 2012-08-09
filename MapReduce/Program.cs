@@ -23,8 +23,8 @@ namespace MapReduce
 				}
 			}
 
-			var people = PeopleFrom("CA", 397)
-				.Concat(PeopleFrom("TX", 256))
+			var people = PeopleFrom("CA", 3970)
+				.Concat(PeopleFrom("TX", 2561))
 				.ToArray();
 
 			var executer = Executer.Create(new PeopleCountByState());

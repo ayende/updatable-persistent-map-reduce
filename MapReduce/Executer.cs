@@ -20,7 +20,7 @@ namespace MapReduce
 	{
 		private static readonly Logger logger = LogManager.GetCurrentClassLogger();
 
-		private const int BatchSize = 16;
+		private const int BatchSize = 256;
 		private readonly MapReduceTask<TMapInput, TReduceInput> task;
 
 		public Executer(MapReduceTask<TMapInput, TReduceInput> task)
@@ -28,13 +28,13 @@ namespace MapReduce
 			this.task = task;
 		}
 
-		public void Execute(IEnumerable<TMapInput> raw)
+		public void Execute(ICollection<TMapInput> raw)
 		{
 			ExecuteMap(raw);
 
 			var keysToProcess = Storage.GetKeysToProcess().ToArray();
 			logger.Debug(()=>string.Format("Processing the following keys: [{0}]",string.Join(", ", keysToProcess)));
-			for (var i = 0; i < 3; i++)
+			for (var i = 0; i < 2; i++)
 			{
 				foreach (var key in keysToProcess)
 				{
@@ -53,7 +53,6 @@ namespace MapReduce
 					persistedResults = Storage.GetScheduledMapBucketsFor(key);
 					break;
 				case 1:
-				case 2:
 					persistedResults = Storage.GetScheduledReduceBucketsFor(key, level);
 					break;
 				default:
@@ -69,7 +68,7 @@ namespace MapReduce
 
 				if(logger.IsDebugEnabled)
 				{
-					logger.Info("Reduce for key {0} level {3} - ({4} items) [{1}] to [{2}]",
+					logger.Info("Reduce for key {0} level {3}, ({4} items) [{1}] to [{2}]",
 						key,
 						string.Join(", ", reduceInputs.Take(2).Select(x=>x.ToString())),
 						string.Join(", ", results.Select(x => x.ToString())),
@@ -78,24 +77,23 @@ namespace MapReduce
 					);
 				}
 
-				if (level < 2)
+				if (level < 1)
 					Storage.PersistReduce(key, level + 1, items.Key, results);
 				else
 					Storage.PersistResult(key, results);
 			}
 		}
 
-		private void ExecuteMap(IEnumerable<TMapInput> raw)
+		private void ExecuteMap(ICollection<TMapInput> raw)
 		{
+			var ids = new HashSet<string>(raw.Select(mapInput => task.GetDocumentId(mapInput)));
+
+			Storage.DeleteDocumentIdResultsAndScheduleTheirBucketsForReduce(ids);
+				
+
 			foreach (var partition in raw.Partition(BatchSize))
 			{
 				var items = partition.ToArray();
-				foreach (var mapInput in items)
-				{
-					var documentId = task.GetDocumentId(mapInput);
-					logger.Debug("Removing old results for document: {0}", documentId);
-					Storage.DeleteDocumentIdResultsAndScheduleTheirBucketsForReduce(documentId);
-				}
 
 				logger.Info("Mapping {0} items", items.Length);
 				foreach (var reduceInput in from tuple in task.Map(items) group tuple by new { Id = tuple.Item1, Reduce = task.GetReduceKey(tuple.Item2) })
@@ -239,19 +237,26 @@ namespace MapReduce
 					File.Delete(result);
 			}
 
-			public static void DeleteDocumentIdResultsAndScheduleTheirBucketsForReduce(string documentId)
+			public static void DeleteDocumentIdResultsAndScheduleTheirBucketsForReduce(HashSet<string> documentIds)
 			{
 				if (Directory.Exists("MapResults") == false)
 					return;
 
-				foreach (var file in Directory.GetFiles("MapResults", documentId, SearchOption.AllDirectories))
+				ILookup<string, string> allFiles =
+					Directory.GetFiles("MapResults", "*", SearchOption.AllDirectories).ToLookup(Path.GetFileNameWithoutExtension,
+					                                                                            StringComparer.InvariantCultureIgnoreCase);
+				foreach (var docId in documentIds)
 				{
-					var persistedResult = ReadFromFile(file);
-					logger.Debug("Deleting old result for {0} with reduce key {1}",
-					             documentId, persistedResult.Key);
-					ScheduleReduction(persistedResult.Key, GetBucket(documentId));
+					foreach (var file in allFiles[docId])
+					{
 
-					File.Delete(file);
+						var persistedResult = ReadFromFile(file);
+						logger.Debug("Deleting old result for {0} with reduce key {1}",
+									 docId, persistedResult.Key);
+						ScheduleReduction(persistedResult.Key, GetBucket(docId));
+
+						File.Delete(file);
+					}
 				}
 			}
 

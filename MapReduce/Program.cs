@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using NLog;
 
 namespace MapReduce
 {
@@ -13,20 +14,38 @@ namespace MapReduce
 		{
 			foreach (var directory in Directory.GetDirectories("."))
 			{
-				Directory.Delete(directory, true);
+				try
+				{
+					Directory.Delete(directory, true);
+				}
+				catch (Exception e)
+				{
+				}
 			}
 
-			var people = PeopleFrom("CA", 379)
-				.Concat(PeopleFrom("TX", 256));
+			var people = PeopleFrom("CA", 397)
+				.Concat(PeopleFrom("TX", 256))
+				.ToArray();
 
-			var executer = new Executer<Person, StatePopulation>(new PeopleCountByState());
+			var executer = Executer.Create(new PeopleCountByState());
 			executer.Execute(people);
 
-			PrintOutput(executer);
+			var val = PrintOutput(executer);
+
+			people[2].State = "TX";
+
+			executer.Execute(new[] {people[2]});
+
+			var next = PrintOutput(executer);
+
+			if (val != next)
+				return;
 		}
 
-		private static void PrintOutput(Executer<Person, StatePopulation> executer)
+		private static int PrintOutput(Executer<Person, StatePopulation> executer)
 		{
+			var value = executer.Query("CA").Concat(executer.Query("TX")).Sum(x => x.Count);
+
 			var results = executer.Query("CA");
 			foreach (var population in results)
 			{
@@ -38,6 +57,10 @@ namespace MapReduce
 			{
 				Console.WriteLine(population);
 			}
+
+			Console.WriteLine(value);
+			return value;
+
 		}
 
 		private static int _peopleCounter;

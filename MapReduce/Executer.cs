@@ -3,13 +3,24 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using NLog;
 using Newtonsoft.Json;
 
 namespace MapReduce
 {
+	public class Executer
+	{
+		public static Executer<TMapInput, TReduceInput> Create<TMapInput, TReduceInput>(MapReduceTask<TMapInput, TReduceInput> task)
+		{
+			return new Executer<TMapInput, TReduceInput>(task);
+		}
+	}
+
 	public class Executer<TMapInput, TReduceInput>
 	{
-		private const int batchSize = 1024;
+		private static Logger logger = LogManager.GetCurrentClassLogger();
+
+		private const int BatchSize = 1024;
 		private readonly MapReduceTask<TMapInput, TReduceInput> task;
 
 		public Executer(MapReduceTask<TMapInput, TReduceInput> task)
@@ -22,6 +33,7 @@ namespace MapReduce
 			ExecuteMap(raw);
 
 			var keysToProcess = Storage.GetKeysToProcess().ToArray();
+			logger.Debug(()=>string.Format("Processing the following keys: [{0}]",string.Join(", ", keysToProcess)));
 			for (int i = 0; i < 3; i++)
 			{
 				foreach (var key in keysToProcess)
@@ -48,9 +60,24 @@ namespace MapReduce
 					throw new ArgumentException("Invalid level: " + level);
 			}
 
-			foreach (var items in persistedResults.GroupBy(x => x.BucketId/batchSize).ToArray())
+			var groupings = persistedResults.GroupBy(x => x.BucketId/BatchSize).ToArray();
+			foreach (var items in groupings)
 			{
-				var results = task.Reduce(items.SelectMany(x => x.Values)).ToArray();
+				logger.Debug("Executing reduce for {0} level {1} with {2} batches for batch {3}", key, level, groupings.Count(), items.Key);
+				var reduceInputs = items.SelectMany(x => x.Values).ToArray();
+				var results = task.Reduce(reduceInputs).ToArray();
+
+				if(logger.IsDebugEnabled)
+				{
+					logger.Debug("Reduce for key {0} level {3} - ({4} items) [{1}] to [{2}]",
+						key,
+						string.Join(", ", reduceInputs.Select(x=>x.ToString())),
+						string.Join(", ", results.Select(x => x.ToString())),
+						level,
+						reduceInputs.Length
+					);
+				}
+
 				if (level < 2)
 					Storage.PersistReduce(key, level + 1, items.Key, results);
 				else
@@ -60,12 +87,13 @@ namespace MapReduce
 
 		private void ExecuteMap(IEnumerable<TMapInput> raw)
 		{
-			foreach (var partition in raw.Partition(batchSize))
+			foreach (var partition in raw.Partition(BatchSize))
 			{
 				var items = partition.ToArray();
 				foreach (var mapInput in items)
 				{
 					var documentId = task.GetDocumentId(mapInput);
+					logger.Debug("Removing old results for document: {0}", documentId);
 					Storage.DeleteDocumentIdResultsAndScheduleTheirBucketsForReduce(documentId);
 				}
 
@@ -86,30 +114,37 @@ namespace MapReduce
 				foreach (var path in new[]
 					{
 						Path.Combine("Schedules", "Maps", key, bucket.ToString(CultureInfo.InvariantCulture)),
-						Path.Combine("Schedules", "Reduce", "One", key, (bucket/ batchSize).ToString(CultureInfo.InvariantCulture)),
-						Path.Combine("Schedules", "Reduce", "Two", key, ((bucket/ batchSize) / batchSize).ToString(CultureInfo.InvariantCulture)),
+						Path.Combine("Schedules", "Reduce", "One", key, (bucket/ BatchSize).ToString(CultureInfo.InvariantCulture)),
+						Path.Combine("Schedules", "Reduce", "Two", key, ((bucket/ BatchSize) / BatchSize).ToString(CultureInfo.InvariantCulture)),
 					})
 				{
 					var dir = Path.GetDirectoryName(path);
 					if (Directory.Exists(dir) == false)
 						Directory.CreateDirectory(dir);
 					File.WriteAllText(path, "work");
+					logger.Debug("Scheduling {0}", path);
 				}
 
 				// reset buckets
 				foreach (var path in new[]
 					{
-						Path.Combine("ReduceResults", "One", key, (bucket/ batchSize).ToString(CultureInfo.InvariantCulture)),
-						Path.Combine("ReduceResults", "Two", key, ((bucket/ batchSize) / batchSize).ToString(CultureInfo.InvariantCulture)),
+						Path.Combine("ReduceResults", "One", key, (bucket/ BatchSize).ToString(CultureInfo.InvariantCulture)),
+						Path.Combine("ReduceResults", "Two", key, ((bucket/ BatchSize) / BatchSize).ToString(CultureInfo.InvariantCulture)),
 					})
 				{
 					if (Directory.Exists(path))
+					{
 						Directory.Delete(path, true);
+						logger.Debug("Removing old reduce results for {0}", path);
+					}
 				}
 
 				var resultFile = Path.Combine("FinalResults", key);
 				if(File.Exists(resultFile))
+				{
 					File.Delete(resultFile);
+					logger.Debug("Removing old final result for {0}", resultFile);
+				}
 			}
 
 			public static IEnumerable<string> GetKeysToProcess()
@@ -144,9 +179,10 @@ namespace MapReduce
 				File.WriteAllText(Path.Combine(dir, id), serializeObject);
 			}
 
+			private static int counter;
 			private static void WriteResults(string dir, PersistedResult<TReduceInput> persistedResult)
 			{
-				WriteResults(Path.GetFileNameWithoutExtension(Path.GetTempFileName()), dir, persistedResult);
+				WriteResults((++counter).ToString(), dir, persistedResult);
 			}
 
 
@@ -205,7 +241,9 @@ namespace MapReduce
 
 				foreach (var file in Directory.GetFiles("MapResults", documentId, SearchOption.AllDirectories))
 				{
-					var persistedResult = ReadResult(file);
+					var persistedResult = ReadFromFile(file);
+					logger.Debug("Deleting old result for {0} with reduce key {1}",
+					             documentId, persistedResult.Key);
 					ScheduleReduction(persistedResult.Key, GetBucket(documentId));
 
 					File.Delete(file);
@@ -246,7 +284,7 @@ namespace MapReduce
 
 			public static int GetBucket(string id)
 			{
-				return AbsStableInvariantIgnoreCaseStringHash(id) % (batchSize * batchSize);
+				return AbsStableInvariantIgnoreCaseStringHash(id) % (BatchSize * BatchSize);
 			}
 
 			private static int AbsStableInvariantIgnoreCaseStringHash(string s)
@@ -260,13 +298,25 @@ namespace MapReduce
 				if(Directory.Exists(path) == false)
 					yield break;
 
-				foreach (var bucket in Directory.GetFiles(path))
+				var nextBuckets = new HashSet<int>();
+				foreach (var bucketString in Directory.GetFiles(path))
 				{
-					var bucketPath = Path.Combine("MapResults", key, Path.GetFileNameWithoutExtension(bucket));
-					if(Directory.Exists(bucketPath) == false)
+					File.Delete(bucketString);
+					var nextBucket = int.Parse(Path.GetFileNameWithoutExtension(bucketString)) / BatchSize;
+					nextBuckets.Add(nextBucket);
+				}
+
+				var resultsPath = Path.Combine("MapResults", key);
+				if (Directory.Exists(resultsPath) == false)
+					yield break;
+
+				foreach (var bucketString in Directory.GetDirectories(resultsPath))
+				{
+					var nextBucket = int.Parse(Path.GetFileNameWithoutExtension(bucketString)) / BatchSize;
+					if (nextBuckets.Contains(nextBucket) == false)
 						continue;
 
-					foreach (var file in Directory.GetFiles(bucketPath))
+					foreach (var file in Directory.GetFiles(bucketString))
 					{
 						yield return ReadFromFile(file);
 					}
@@ -280,17 +330,30 @@ namespace MapReduce
 				if (Directory.Exists(path) == false)
 					yield break;
 
-				foreach (var bucket in Directory.GetFiles(path))
+				var nextBuckets = new HashSet<int>();
+				foreach (var bucketString in Directory.GetFiles(path))
 				{
-					var bucketPath = Path.Combine("ReduceResults", levelString, key, Path.GetFileNameWithoutExtension(bucket));
-					if (Directory.Exists(bucketPath) == false)
+					File.Delete(bucketString);
+					var nextBucket = int.Parse(Path.GetFileNameWithoutExtension(bucketString)) / BatchSize;
+					nextBuckets.Add(nextBucket);
+				}
+
+				var resultsPath = Path.Combine("ReduceResults", levelString, key);
+				if (Directory.Exists(resultsPath) == false)
+					yield break;
+
+				foreach (var bucketString in Directory.GetDirectories(resultsPath))
+				{
+					var nextBucket = int.Parse(Path.GetFileNameWithoutExtension(bucketString)) / BatchSize;
+					if(nextBuckets.Contains(nextBucket) == false)
 						continue;
 
-					foreach (var file in Directory.GetFiles(bucketPath))
+					foreach (var file in Directory.GetFiles(bucketString))
 					{
 						yield return ReadFromFile(file);
 					}
 				}
+
 			}
 		}
 

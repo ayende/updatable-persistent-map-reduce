@@ -33,7 +33,7 @@ namespace MapReduce
 			ExecuteMap(raw);
 
 			var keysToProcess = Storage.GetKeysToProcess().ToArray();
-			logger.Debug(()=>string.Format("Processing the following keys: [{0}]",string.Join(", ", keysToProcess)));
+			logger.Debug(() => string.Format("Processing the following keys: [{0}]", string.Join(", ", keysToProcess)));
 			for (var i = 0; i < 2; i++)
 			{
 				foreach (var key in keysToProcess)
@@ -59,18 +59,18 @@ namespace MapReduce
 					throw new ArgumentException("Invalid level: " + level);
 			}
 
-			var groupings = persistedResults.GroupBy(x => x.BucketId/BatchSize).ToArray();
+			var groupings = persistedResults.GroupBy(x => x.BucketId / BatchSize).ToArray();
 			foreach (var items in groupings)
 			{
 				logger.Info("Executing reduce for {0} level {1} with {2} batches for batch {3}", key, level, groupings.Count(), items.Key);
 				var reduceInputs = items.SelectMany(x => x.Values).ToArray();
 				var results = task.Reduce(reduceInputs).ToArray();
 
-				if(logger.IsDebugEnabled)
+				if (logger.IsDebugEnabled)
 				{
-					logger.Info("Reduce for key {0} level {3}, ({4} items) [{1}] to [{2}]",
+					logger.Debug("Reduce for key {0} level {3}, ({4} items) [{1}] to [{2}]",
 						key,
-						string.Join(", ", reduceInputs.Take(2).Select(x=>x.ToString())),
+						string.Join(", ", reduceInputs.Select(x => "{" + x + "}")),
 						string.Join(", ", results.Select(x => x.ToString())),
 						level,
 						reduceInputs.Length
@@ -89,7 +89,7 @@ namespace MapReduce
 			var ids = new HashSet<string>(raw.Select(mapInput => task.GetDocumentId(mapInput)));
 
 			Storage.DeleteDocumentIdResultsAndScheduleTheirBucketsForReduce(ids);
-				
+
 
 			foreach (var partition in raw.Partition(BatchSize))
 			{
@@ -101,7 +101,7 @@ namespace MapReduce
 					var reduceInputs = reduceInput.Select(x => x.Item2).ToArray();
 					var bucket = Storage.GetBucket(reduceInput.Key.Id);
 
-					logger.Info("Result {0}/{1} ({2}): {3}", reduceInput.Key.Id, reduceInput.Key.Reduce, bucket, string.Join(", ", reduceInput.Select(x=>x.ToString())));
+					logger.Debug("Result {0}/{1} ({2}): {3}", reduceInput.Key.Id, reduceInput.Key.Reduce, bucket, string.Join(", ", reduceInput.Select(x => x.ToString())));
 
 					Storage.ScheduleReduction(reduceInput.Key.Reduce, bucket);
 					Storage.PersistMap(reduceInput.Key.Reduce, reduceInput.Key.Id, bucket, reduceInputs);
@@ -143,7 +143,7 @@ namespace MapReduce
 				}
 
 				var resultFile = Path.Combine("FinalResults", key);
-				if(File.Exists(resultFile))
+				if (File.Exists(resultFile))
 				{
 					File.Delete(resultFile);
 					logger.Debug("Removing old final result for {0}", resultFile);
@@ -244,7 +244,7 @@ namespace MapReduce
 
 				ILookup<string, string> allFiles =
 					Directory.GetFiles("MapResults", "*", SearchOption.AllDirectories).ToLookup(Path.GetFileNameWithoutExtension,
-					                                                                            StringComparer.InvariantCultureIgnoreCase);
+																								StringComparer.InvariantCultureIgnoreCase);
 				foreach (var docId in documentIds)
 				{
 					foreach (var file in allFiles[docId])
@@ -305,7 +305,7 @@ namespace MapReduce
 			public static IEnumerable<PersistedResult<TReduceInput>> GetScheduledMapBucketsFor(string key)
 			{
 				var path = Path.Combine("Schedules", "Maps", key);
-				if(Directory.Exists(path) == false)
+				if (Directory.Exists(path) == false)
 					yield break;
 
 				var nextBuckets = new HashSet<int>();
@@ -355,7 +355,7 @@ namespace MapReduce
 				foreach (var bucketString in Directory.GetDirectories(resultsPath))
 				{
 					var nextBucket = int.Parse(Path.GetFileNameWithoutExtension(bucketString)) / BatchSize;
-					if(nextBuckets.Contains(nextBucket) == false)
+					if (nextBuckets.Contains(nextBucket) == false)
 						continue;
 
 					foreach (var file in Directory.GetFiles(bucketString))
